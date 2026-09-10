@@ -171,13 +171,13 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 		if !matchesDispatchRule(rule, call) {
 			continue
 		}
-		directRule, ok := rule.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleDirect)
+
+		roomName, pin, ok := dispatchRuleRoom(rule)
 		if !ok {
 			p.log.Infow("SIP livekit_api skipping unsupported dispatch rule type", "ruleID", rule.SipDispatchRuleId)
 			continue
 		}
-		direct := directRule.DispatchRuleDirect
-		if direct.Pin != "" && !info.NoPin && info.Pin != direct.Pin {
+		if pin != "" && !info.NoPin && info.Pin != pin {
 			return sip.CallDispatch{
 				ProjectID:      projectID,
 				TrunkID:        trunk.SipTrunkId,
@@ -186,12 +186,12 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 				MediaConfig:    rule.Media,
 			}
 		}
-		if direct.RoomName == "" {
-			p.log.Warnw("SIP livekit_api direct dispatch rule has empty room name", nil, "ruleID", rule.SipDispatchRuleId)
+		if roomName == "" {
+			p.log.Warnw("SIP livekit_api dispatch rule has empty room name", nil, "ruleID", rule.SipDispatchRuleId)
 			continue
 		}
-		if err := p.prepareRoom(ctx, direct.RoomName, rule); err != nil {
-			p.log.Warnw("SIP livekit_api room preparation failed", err, "room", direct.RoomName, "ruleID", rule.SipDispatchRuleId)
+		if err := p.prepareRoom(ctx, roomName, rule); err != nil {
+			p.log.Warnw("SIP livekit_api room preparation failed", err, "room", roomName, "ruleID", rule.SipDispatchRuleId)
 			return sip.CallDispatch{Result: sip.DispatchServiceUnavailable, ProjectID: projectID, TrunkID: trunk.SipTrunkId, DispatchRuleID: rule.SipDispatchRuleId}
 		}
 
@@ -216,7 +216,7 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 			Result:    sip.DispatchAccept,
 			Room: sip.RoomConfig{
 				WsUrl:      p.conf.WsUrl,
-				RoomName:   direct.RoomName,
+				RoomName:   roomName,
 				RoomPreset: rule.RoomPreset,
 				RoomConfig: rule.RoomConfig,
 				Participant: sip.ParticipantConfig{
@@ -239,6 +239,34 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 	}
 
 	return sip.CallDispatch{Result: sip.DispatchNoRuleReject, ProjectID: projectID, TrunkID: trunk.SipTrunkId}
+}
+
+func dispatchRuleRoom(rule *livekit.SIPDispatchRuleInfo) (roomName, pin string, ok bool) {
+	if rule == nil || rule.Rule == nil {
+		return "", "", false
+	}
+
+	switch typed := rule.Rule.Rule.(type) {
+	case *livekit.SIPDispatchRule_DispatchRuleDirect:
+		if typed.DispatchRuleDirect == nil {
+			return "", "", false
+		}
+		return typed.DispatchRuleDirect.RoomName, typed.DispatchRuleDirect.Pin, true
+	case *livekit.SIPDispatchRule_DispatchRuleIndividual:
+		if typed.DispatchRuleIndividual == nil {
+			return "", "", false
+		}
+		roomName = typed.DispatchRuleIndividual.RoomPrefix
+		if roomName == "" {
+			roomName = "sip-individual"
+		}
+		if !typed.DispatchRuleIndividual.NoRandomness {
+			roomName += "-" + randomStaticRoomSuffix(6)
+		}
+		return roomName, typed.DispatchRuleIndividual.Pin, true
+	default:
+		return "", "", false
+	}
 }
 
 func (p *LiveKitAPICallControl) GetMediaProcessor(_ []livekit.SIPFeature, _ map[string]string, _ string, _ sip.MediaProcessorOpts) msdk.PCM16Processor {

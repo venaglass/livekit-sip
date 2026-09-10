@@ -158,6 +158,41 @@ func TestLiveKitAPICallControlDispatchDirectRuleCreatesRoomAndAgentDispatch(t *t
 	require.Equal(t, `{"x":1}`, dispatchClient.reqs[0].Metadata)
 }
 
+func TestLiveKitAPICallControlDispatchIndividualRuleCreatesRoomAndAgentDispatch(t *testing.T) {
+	trunk := testInboundTrunk()
+	rule := &livekit.SIPDispatchRuleInfo{
+		SipDispatchRuleId: "rule-individual",
+		RoomConfig: &livekit.RoomConfiguration{
+			Agents: []*livekit.RoomAgentDispatch{
+				{AgentName: "agent-a", Metadata: `{"call":"individual"}`},
+			},
+		},
+		Rule: &livekit.SIPDispatchRule{
+			Rule: &livekit.SIPDispatchRule_DispatchRuleIndividual{
+				DispatchRuleIndividual: &livekit.SIPDispatchRuleIndividual{
+					RoomPrefix:   "call-room",
+					NoRandomness: true,
+				},
+			},
+		},
+	}
+	provider, _, roomClient, dispatchClient := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{trunk}, []*livekit.SIPDispatchRuleInfo{rule})
+
+	dispatch := provider.DispatchCall(context.Background(), &sip.CallInfo{
+		TrunkID: trunk.SipTrunkId,
+		Call:    testSIPCall(),
+	})
+
+	require.Equal(t, sip.DispatchAccept, dispatch.Result)
+	require.Equal(t, "call-room", dispatch.Room.RoomName)
+	require.Len(t, roomClient.reqs, 1)
+	require.Equal(t, "call-room", roomClient.reqs[0].Name)
+	require.Len(t, dispatchClient.reqs, 1)
+	require.Equal(t, "call-room", dispatchClient.reqs[0].Room)
+	require.Equal(t, "agent-a", dispatchClient.reqs[0].AgentName)
+	require.Equal(t, `{"call":"individual"}`, dispatchClient.reqs[0].Metadata)
+}
+
 func TestLiveKitAPICallControlDispatchPinRequiredThenAccepted(t *testing.T) {
 	trunk := testInboundTrunk()
 	rule := testDirectRule("room-a", "1234")
