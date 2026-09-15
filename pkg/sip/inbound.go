@@ -793,6 +793,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	tdisp := c.mon.StageDurTimer("eval-dispatch")
+	c.log().Infow("Evaluating inbound call dispatch", "trunkID", trunkID)
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
 		TrunkID: trunkID,
 		Call:    c.call,
@@ -800,6 +801,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		NoPin:   false,
 	})
 	tdisp()
+	c.log().Infow("Inbound call dispatch evaluated",
+		"result", disp.Result,
+		"trunkID", disp.TrunkID,
+		"ruleID", disp.DispatchRuleID,
+		"room", disp.Room.RoomName,
+	)
 	if disp.MediaConfig == nil {
 		disp.MediaConfig = &livekit.SIPMediaConfig{}
 	}

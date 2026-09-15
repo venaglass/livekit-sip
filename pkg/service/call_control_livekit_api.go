@@ -177,9 +177,19 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 		p.log.Warnw("SIP livekit_api dispatch rule lookup failed", err, "trunkID", info.TrunkID)
 		return sip.CallDispatch{Result: sip.DispatchServiceUnavailable, ProjectID: projectID, TrunkID: info.TrunkID}
 	}
+	p.log.Infow("SIP livekit_api dispatch rules returned", "trunkID", info.TrunkID, "ruleCount", len(ruleResp.GetItems()))
 
 	for _, rule := range ruleResp.GetItems() {
 		if !matchesDispatchRule(rule, call, info.TrunkID) {
+			if rule != nil {
+				p.log.Infow("SIP livekit_api dispatch rule did not match call",
+					"trunkID", info.TrunkID,
+					"ruleID", rule.SipDispatchRuleId,
+					"ruleTrunkIDs", rule.TrunkIds,
+					"ruleNumberCount", len(rule.Numbers),
+					"ruleInboundNumberCount", len(rule.InboundNumbers),
+				)
+			}
 			continue
 		}
 		roomName, pin, ok := dispatchRuleRoom(rule)
@@ -200,6 +210,13 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 			p.log.Warnw("SIP livekit_api dispatch rule has empty room name", nil, "ruleID", rule.SipDispatchRuleId)
 			continue
 		}
+		p.log.Infow("SIP livekit_api dispatch rule matched",
+			"trunkID", info.TrunkID,
+			"ruleID", rule.SipDispatchRuleId,
+			"room", roomName,
+			"roomConfigPresent", rule.RoomConfig != nil,
+			"agentCount", roomAgentCount(rule.RoomConfig),
+		)
 		if err := p.prepareRoom(ctx, roomName, rule); err != nil {
 			p.log.Warnw("SIP livekit_api room preparation failed", err, "room", roomName, "ruleID", rule.SipDispatchRuleId)
 			return sip.CallDispatch{Result: sip.DispatchServiceUnavailable, ProjectID: projectID, TrunkID: trunk.SipTrunkId, DispatchRuleID: rule.SipDispatchRuleId}
@@ -314,20 +331,26 @@ func (p *LiveKitAPICallControl) prepareRoom(ctx context.Context, roomName string
 		req.Tags = rc.Tags
 	}
 
+	p.log.Infow("SIP livekit_api creating room", "room", roomName)
 	_, err := p.roomClient.CreateRoom(ctx, req)
 	if err != nil {
 		var twerr twirp.Error
 		if !errors.As(err, &twerr) || twerr.Code() != twirp.AlreadyExists {
 			return err
 		}
+		p.log.Infow("SIP livekit_api room already exists", "room", roomName)
+	} else {
+		p.log.Infow("SIP livekit_api room created", "room", roomName)
 	}
 	if rule.RoomConfig == nil {
 		return nil
 	}
 	for _, agent := range rule.RoomConfig.Agents {
 		if agent.AgentName == "" {
+			p.log.Warnw("SIP livekit_api skipping agent dispatch with empty name", nil, "room", roomName)
 			continue
 		}
+		p.log.Infow("SIP livekit_api creating agent dispatch", "room", roomName, "agentName", agent.AgentName)
 		_, err = p.dispatchClient.CreateDispatch(ctx, &livekit.CreateAgentDispatchRequest{
 			Room:      roomName,
 			AgentName: agent.AgentName,
@@ -336,8 +359,16 @@ func (p *LiveKitAPICallControl) prepareRoom(ctx context.Context, roomName string
 		if err != nil {
 			return fmt.Errorf("create agent dispatch %q: %w", agent.AgentName, err)
 		}
+		p.log.Infow("SIP livekit_api agent dispatch created", "room", roomName, "agentName", agent.AgentName)
 	}
 	return nil
+}
+
+func roomAgentCount(config *livekit.RoomConfiguration) int {
+	if config == nil {
+		return 0
+	}
+	return len(config.Agents)
 }
 
 func matchesInboundTrunk(trunk *livekit.SIPInboundTrunkInfo, call *rpc.SIPCall) bool {
