@@ -106,6 +106,26 @@ func TestLiveKitAPICallControlAuthPassword(t *testing.T) {
 	require.Equal(t, []string{"+15550001111"}, sipClient.inboundReqs[0].Numbers)
 }
 
+func TestLiveKitAPICallControlAuthPrefersNumberSpecificTrunkOverWildcard(t *testing.T) {
+	wildcard := &livekit.SIPInboundTrunkInfo{
+		SipTrunkId:   "wildcard-trunk",
+		AuthUsername: "wildcard-user",
+		AuthPassword: "wildcard-password",
+	}
+	specific := &livekit.SIPInboundTrunkInfo{
+		SipTrunkId:   "number-trunk",
+		Numbers:      []string{"+15550001111"},
+		AuthUsername: "number-user",
+		AuthPassword: "number-password",
+	}
+	provider, _, _, _ := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{wildcard, specific}, nil)
+
+	auth, err := provider.GetAuthCredentials(context.Background(), testSIPCall())
+	require.NoError(t, err)
+	require.Equal(t, "number-trunk", auth.TrunkID)
+	require.Equal(t, "number-user", auth.Auth.Username)
+}
+
 func TestLiveKitAPICallControlDispatchMatchesRequestURI(t *testing.T) {
 	trunk := testInboundTrunk()
 	rule := testDirectRule("room-a", "")
@@ -116,6 +136,17 @@ func TestLiveKitAPICallControlDispatchMatchesRequestURI(t *testing.T) {
 
 	dispatch := provider.DispatchCall(context.Background(), &sip.CallInfo{TrunkID: trunk.SipTrunkId, Call: call})
 	require.Equal(t, sip.DispatchAccept, dispatch.Result)
+}
+
+func TestLiveKitAPICallControlDispatchSkipsRuleForDifferentTrunk(t *testing.T) {
+	trunk := testInboundTrunk()
+	rule := testDirectRule("wrong-room", "")
+	rule.TrunkIds = []string{"another-trunk"}
+	provider, _, roomClient, _ := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{trunk}, []*livekit.SIPDispatchRuleInfo{rule})
+
+	dispatch := provider.DispatchCall(context.Background(), &sip.CallInfo{TrunkID: trunk.SipTrunkId, Call: testSIPCall()})
+	require.Equal(t, sip.DispatchNoRuleReject, dispatch.Result)
+	require.Empty(t, roomClient.reqs)
 }
 
 func TestLiveKitAPICallControlAuthAllowedFilters(t *testing.T) {
@@ -231,11 +262,7 @@ func TestLiveKitAPICallControlDispatchSkipsUnsupportedRules(t *testing.T) {
 	trunk := testInboundTrunk()
 	individual := &livekit.SIPDispatchRuleInfo{
 		SipDispatchRuleId: "rule-individual",
-		Rule: &livekit.SIPDispatchRule{
-			Rule: &livekit.SIPDispatchRule_DispatchRuleIndividual{
-				DispatchRuleIndividual: &livekit.SIPDispatchRuleIndividual{RoomPrefix: "room"},
-			},
-		},
+		Rule:              &livekit.SIPDispatchRule{},
 	}
 	provider, _, _, _ := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{trunk}, []*livekit.SIPDispatchRuleInfo{individual})
 

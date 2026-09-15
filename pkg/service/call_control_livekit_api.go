@@ -94,9 +94,7 @@ func (p *LiveKitAPICallControl) StateHandler(_ string, _ *rpc.SIPCallObservabili
 }
 
 func (p *LiveKitAPICallControl) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (sip.AuthInfo, error) {
-	resp, err := p.sipClient.ListSIPInboundTrunk(ctx, &livekit.ListSIPInboundTrunkRequest{
-		Numbers: []string{call.Address.User},
-	})
+	trunk, err := p.findInboundTrunk(ctx, call)
 	if err != nil {
 		return sip.AuthInfo{}, err
 	}
@@ -105,33 +103,46 @@ func (p *LiveKitAPICallControl) GetAuthCredentials(ctx context.Context, call *rp
 	if projectID == "" {
 		projectID = call.ProjectId
 	}
+	if trunk == nil {
+		return sip.AuthInfo{ProjectID: projectID, Result: sip.AuthNoTrunkFound}, nil
+	}
+	if trunk.AuthUsername != "" && trunk.AuthPassword != "" {
+		return sip.AuthInfo{
+			ProjectID: projectID,
+			TrunkID:   trunk.SipTrunkId,
+			Result:    sip.AuthPassword,
+			Auth: sip.InboundAuth{
+				Username: trunk.AuthUsername,
+				Password: trunk.AuthPassword,
+				Realm:    trunk.AuthRealm,
+			},
+		}, nil
+	}
+	return sip.AuthInfo{ProjectID: projectID, TrunkID: trunk.SipTrunkId, Result: sip.AuthAccept}, nil
+}
+
+func (p *LiveKitAPICallControl) findInboundTrunk(ctx context.Context, call *rpc.SIPCall) (*livekit.SIPInboundTrunkInfo, error) {
+	resp, err := p.sipClient.ListSIPInboundTrunk(ctx, &livekit.ListSIPInboundTrunkRequest{
+		Numbers: []string{call.Address.User},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var selectedTrunk *livekit.SIPInboundTrunkInfo
 	for _, trunk := range resp.GetItems() {
 		if !matchesInboundTrunk(trunk, call) {
 			continue
 		}
-		if trunk.AuthUsername != "" && trunk.AuthPassword != "" {
-			return sip.AuthInfo{
-				ProjectID: projectID,
-				TrunkID:   trunk.SipTrunkId,
-				Result:    sip.AuthPassword,
-				Auth: sip.InboundAuth{
-					Username: trunk.AuthUsername,
-					Password: trunk.AuthPassword,
-					Realm:    trunk.AuthRealm,
-				},
-			}, nil
+		// The API includes wildcard trunks in number-filtered results. Prefer
+		// a trunk with an explicit number over a wildcard, regardless of API order.
+		if selectedTrunk == nil || (len(selectedTrunk.Numbers) == 0 && len(trunk.Numbers) != 0) {
+			selectedTrunk = trunk
 		}
-		return sip.AuthInfo{
-			ProjectID: projectID,
-			TrunkID:   trunk.SipTrunkId,
-			Result:    sip.AuthAccept,
-		}, nil
+		if len(trunk.Numbers) != 0 {
+			break
+		}
 	}
-
-	return sip.AuthInfo{
-		ProjectID: projectID,
-		Result:    sip.AuthNoTrunkFound,
-	}, nil
+	return selectedTrunk, nil
 }
 
 func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {
@@ -168,10 +179,9 @@ func (p *LiveKitAPICallControl) DispatchCall(ctx context.Context, info *sip.Call
 	}
 
 	for _, rule := range ruleResp.GetItems() {
-		if !matchesDispatchRule(rule, call) {
+		if !matchesDispatchRule(rule, call, info.TrunkID) {
 			continue
 		}
-
 		roomName, pin, ok := dispatchRuleRoom(rule)
 		if !ok {
 			p.log.Infow("SIP livekit_api skipping unsupported dispatch rule type", "ruleID", rule.SipDispatchRuleId)
@@ -343,8 +353,11 @@ func matchesInboundTrunk(trunk *livekit.SIPInboundTrunkInfo, call *rpc.SIPCall) 
 	return true
 }
 
-func matchesDispatchRule(rule *livekit.SIPDispatchRuleInfo, call *rpc.SIPCall) bool {
+func matchesDispatchRule(rule *livekit.SIPDispatchRuleInfo, call *rpc.SIPCall, trunkID string) bool {
 	if rule == nil || rule.Rule == nil || rule.Rule.Rule == nil {
+		return false
+	}
+	if len(rule.TrunkIds) != 0 && !slices.Contains(rule.TrunkIds, trunkID) {
 		return false
 	}
 	if len(rule.InboundNumbers) != 0 && !slices.Contains(rule.InboundNumbers, call.From.User) {
