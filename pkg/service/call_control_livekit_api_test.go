@@ -80,12 +80,13 @@ func (f *fakeLiveKitAgentDispatchClient) CreateDispatch(_ context.Context, req *
 }
 
 func TestLiveKitAPICallControlAuthNoTrunk(t *testing.T) {
-	provider, _, _, _ := newTestLiveKitAPIProvider(nil, nil)
+	provider, sipClient, _, _ := newTestLiveKitAPIProvider(nil, nil)
 
 	auth, err := provider.GetAuthCredentials(context.Background(), testSIPCall())
 	require.NoError(t, err)
 	require.Equal(t, sip.AuthNoTrunkFound, auth.Result)
 	require.Equal(t, "project-a", auth.ProjectID)
+	require.Equal(t, []string{"+15550001111"}, sipClient.inboundReqs[0].Numbers)
 }
 
 func TestLiveKitAPICallControlAuthPassword(t *testing.T) {
@@ -93,7 +94,7 @@ func TestLiveKitAPICallControlAuthPassword(t *testing.T) {
 	trunk.AuthUsername = "u"
 	trunk.AuthPassword = "p"
 	trunk.AuthRealm = "r"
-	provider, _, _, _ := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{trunk}, nil)
+	provider, sipClient, _, _ := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{trunk}, nil)
 
 	auth, err := provider.GetAuthCredentials(context.Background(), testSIPCall())
 	require.NoError(t, err)
@@ -102,6 +103,19 @@ func TestLiveKitAPICallControlAuthPassword(t *testing.T) {
 	require.Equal(t, "u", auth.Auth.Username)
 	require.Equal(t, "p", auth.Auth.Password)
 	require.Equal(t, "r", auth.Auth.Realm)
+	require.Equal(t, []string{"+15550001111"}, sipClient.inboundReqs[0].Numbers)
+}
+
+func TestLiveKitAPICallControlDispatchMatchesRequestURI(t *testing.T) {
+	trunk := testInboundTrunk()
+	rule := testDirectRule("room-a", "")
+	rule.Numbers = []string{"+15550001111"}
+	call := testSIPCall()
+	call.To.User = "+19999999999" // The To header can differ from the INVITE Request-URI.
+	provider, _, _, _ := newTestLiveKitAPIProvider([]*livekit.SIPInboundTrunkInfo{trunk}, []*livekit.SIPDispatchRuleInfo{rule})
+
+	dispatch := provider.DispatchCall(context.Background(), &sip.CallInfo{TrunkID: trunk.SipTrunkId, Call: call})
+	require.Equal(t, sip.DispatchAccept, dispatch.Result)
 }
 
 func TestLiveKitAPICallControlAuthAllowedFilters(t *testing.T) {
@@ -286,6 +300,7 @@ func testSIPCall() *rpc.SIPCall {
 		LkCallId:  "call-a",
 		SipCallId: "sip-call-a",
 		SourceIp:  "203.0.113.10",
+		Address:   &livekit.SIPUri{User: "+15550001111"},
 		From:      &livekit.SIPUri{User: "+15551112222"},
 		To:        &livekit.SIPUri{User: "+15553334444"},
 	}

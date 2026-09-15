@@ -95,7 +95,7 @@ func (p *LiveKitAPICallControl) StateHandler(_ string, _ *rpc.SIPCallObservabili
 
 func (p *LiveKitAPICallControl) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (sip.AuthInfo, error) {
 	resp, err := p.sipClient.ListSIPInboundTrunk(ctx, &livekit.ListSIPInboundTrunkRequest{
-		Numbers: []string{call.To.User},
+		Numbers: []string{call.Address.User},
 	})
 	if err != nil {
 		return sip.AuthInfo{}, err
@@ -350,7 +350,7 @@ func matchesDispatchRule(rule *livekit.SIPDispatchRuleInfo, call *rpc.SIPCall) b
 	if len(rule.InboundNumbers) != 0 && !slices.Contains(rule.InboundNumbers, call.From.User) {
 		return false
 	}
-	if len(rule.Numbers) != 0 && !slices.Contains(rule.Numbers, call.To.User) {
+	if len(rule.Numbers) != 0 && !slices.Contains(rule.Numbers, call.Address.User) {
 		return false
 	}
 	return true
