@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
@@ -25,10 +26,12 @@ import (
 	"github.com/twitchtv/twirp"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/server-sdk-go/v2/signalling"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/sip"
@@ -37,6 +40,13 @@ import (
 type liveKitSIPClient interface {
 	ListSIPInboundTrunk(context.Context, *livekit.ListSIPInboundTrunkRequest) (*livekit.ListSIPInboundTrunkResponse, error)
 	ListSIPDispatchRule(context.Context, *livekit.ListSIPDispatchRuleRequest) (*livekit.ListSIPDispatchRuleResponse, error)
+}
+
+// liveKitSIPTrunkClient is kept separate because the server SDK does not
+// expose GetSIPInboundTrunk on its SIPClient wrapper. Unlike the list API,
+// the single-trunk API returns the configured authentication password.
+type liveKitSIPTrunkClient interface {
+	GetSIPInboundTrunk(context.Context, *livekit.GetSIPInboundTrunkRequest) (*livekit.GetSIPInboundTrunkResponse, error)
 }
 
 type liveKitRoomClient interface {
@@ -51,6 +61,7 @@ type LiveKitAPICallControl struct {
 	conf           *config.Config
 	log            logger.Logger
 	sipClient      liveKitSIPClient
+	sipTrunkClient liveKitSIPTrunkClient
 	roomClient     liveKitRoomClient
 	dispatchClient liveKitAgentDispatchClient
 }
@@ -72,6 +83,9 @@ func NewLiveKitAPICallControlWithClients(conf *config.Config, log logger.Logger,
 func (p *LiveKitAPICallControl) Init(_ context.Context) error {
 	if p.sipClient == nil {
 		p.sipClient = lksdk.NewSIPClient(p.conf.WsUrl, p.conf.ApiKey, p.conf.ApiSecret)
+	}
+	if p.sipTrunkClient == nil {
+		p.sipTrunkClient = livekit.NewSIPProtobufClient(signalling.ToHttpURL(p.conf.WsUrl), &http.Client{})
 	}
 	if p.roomClient == nil {
 		p.roomClient = lksdk.NewRoomServiceClient(p.conf.WsUrl, p.conf.ApiKey, p.conf.ApiSecret)
@@ -106,6 +120,15 @@ func (p *LiveKitAPICallControl) GetAuthCredentials(ctx context.Context, call *rp
 	if trunk == nil {
 		return sip.AuthInfo{ProjectID: projectID, Result: sip.AuthNoTrunkFound}, nil
 	}
+	if p.sipTrunkClient != nil {
+		fullTrunk, err := p.getInboundTrunk(ctx, trunk.SipTrunkId)
+		if err != nil {
+			return sip.AuthInfo{}, err
+		}
+		if fullTrunk != nil {
+			trunk = fullTrunk
+		}
+	}
 	if trunk.AuthUsername != "" && trunk.AuthPassword != "" {
 		return sip.AuthInfo{
 			ProjectID: projectID,
@@ -119,6 +142,27 @@ func (p *LiveKitAPICallControl) GetAuthCredentials(ctx context.Context, call *rp
 		}, nil
 	}
 	return sip.AuthInfo{ProjectID: projectID, TrunkID: trunk.SipTrunkId, Result: sip.AuthAccept}, nil
+}
+
+// getInboundTrunk uses the single-trunk API because ListSIPInboundTrunk
+// redacts auth_password as "********". The generated protobuf client does not
+// add authentication, so attach the same short-lived sip.admin token used by
+// the server SDK's SIP client here.
+func (p *LiveKitAPICallControl) getInboundTrunk(ctx context.Context, trunkID string) (*livekit.SIPInboundTrunkInfo, error) {
+	token, err := auth.NewAccessToken(p.conf.ApiKey, p.conf.ApiSecret).
+		SetSIPGrant(&auth.SIPGrant{Admin: true}).
+		ToJWT()
+	if err != nil {
+		return nil, err
+	}
+	ctx = twirp.WithHTTPRequestHeaders(ctx, signalling.NewHTTPHeaderWithToken(token))
+	resp, err := p.sipTrunkClient.GetSIPInboundTrunk(ctx, &livekit.GetSIPInboundTrunkRequest{
+		SipTrunkId: trunkID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetTrunk(), nil
 }
 
 func (p *LiveKitAPICallControl) findInboundTrunk(ctx context.Context, call *rpc.SIPCall) (*livekit.SIPInboundTrunkInfo, error) {
