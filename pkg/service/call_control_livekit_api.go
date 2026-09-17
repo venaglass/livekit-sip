@@ -155,7 +155,10 @@ func (p *LiveKitAPICallControl) getInboundTrunk(ctx context.Context, trunkID str
 	if err != nil {
 		return nil, err
 	}
-	ctx = twirp.WithHTTPRequestHeaders(ctx, signalling.NewHTTPHeaderWithToken(token))
+	ctx, err = twirp.WithHTTPRequestHeaders(ctx, signalling.NewHTTPHeaderWithToken(token))
+	if err != nil {
+		return nil, err
+	}
 	resp, err := p.sipTrunkClient.GetSIPInboundTrunk(ctx, &livekit.GetSIPInboundTrunkRequest{
 		SipTrunkId: trunkID,
 	})
